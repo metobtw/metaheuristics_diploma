@@ -1,0 +1,10 @@
+github.com/ardabasaran/go-fourier v0.0.0-20190312022224-70b8b6ca705b h1:cGMcKQQ+Ddl0veatHh4/wQzfsxvgUWrAPRMUux96KR4=
+github.com/ardabasaran/go-fourier v0.0.0-20190312022224-70b8b6ca705b/go.mod h1:r5RSg4RTxEHhWUuQ1ppT+WXEXhmR/HzZRqWqnvINtwk=
+github.com/mjibson/go-dsp v0.0.0-20180508042940-11479a337f12 h1:dd7vnTDfjtwCETZDrRe+GPYNLA1jBtbZeyfyE8eZCyk=
+github.com/mjibson/go-dsp v0.0.0-20180508042940-11479a337f12/go.mod h1:i/KKcxEWEO8Yyl11DYafRPKOPVYTrhxiTRigjtEEXZU=
+github.com/r9y9/gossp v0.0.1 h1:G/aBnndFXkn4ILXAvBMwlvJt8sBjdLy05VGktBf8bc0=
+github.com/r9y9/gossp v0.0.1/go.mod h1:34aoHwIJFYI89DdjTHfplSkRIk1XTAMzTELRGEOfMg8=
+gocv.io/x/gocv v0.39.0 h1:vWHupDE22LebZW6id2mVeT767j1YS8WqGt+ZiV7XJXE=
+gocv.io/x/gocv v0.39.0/go.mod h1:zYdWMj29WAEznM3Y8NsU3A0TRq/wR/cy75jeUypThqU=
+gocv.io/x/gocv v0.40.0 h1:kGBu/UVj+dO6A9dhQmGOnCICSL7ke7b5YtX3R3azdXI=
+gocv.io/x/gocv v0.40.0/go.mod h1:zYdWMj29WAEznM3Y8NsU3A0TRq/wR/cy75jeUypThqU=
