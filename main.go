@@ -13,6 +13,16 @@ import (
 	"gocv.io/x/gocv"
 )
 
+func clamp(value, min, max float64) float64 {
+	if value < min {
+		return min
+	}
+	if value > max {
+		return max
+	}
+	return value
+}
+
 func sign(x float64) float64 {
 	if x < 0 {
 		return -1.0
@@ -240,7 +250,7 @@ func (meta *DE) optimize() Return_metric {
 		meta.agents[i] = metric_value.result_array
 		fitness[i] = metric_value.computed_metric
 	}
-	best_agent_fitness := fitness[0]
+	best_agent_fitness := 0.0
 	best_agent := make([]float64, len(meta.agents[0]))
 	y := make([]float64, len(meta.agents[0]))
 	for t := 0; t < meta.metaheuristic_info.num_iterations; t++ {
@@ -280,6 +290,167 @@ func (meta *DE) optimize() Return_metric {
 	return Return_metric{best_agent_fitness, best_agent}
 }
 
+type SCA struct {
+	agents             [][]float64
+	metaheuristic_info Metaheuristic
+	a_linear_component float64
+}
+
+func (meta *SCA) optimize() Return_metric {
+	fitness := make([]float64, meta.metaheuristic_info.population_size)
+	for i := 0; i < meta.metaheuristic_info.population_size; i++ {
+		metric_value := meta.metaheuristic_info.metric.Compute_metric(&meta.agents[i])
+		meta.agents[i] = metric_value.result_array
+		fitness[i] = metric_value.computed_metric
+	}
+
+	best_agent_index := 0
+	for i := 0; i < meta.metaheuristic_info.population_size; i++ {
+		if fitness[i] > fitness[best_agent_index] {
+			best_agent_index = i
+		}
+	}
+
+	best_agent_fitness := fitness[best_agent_index]
+	best_agent := meta.agents[best_agent_index]
+	for t := 0; t < meta.metaheuristic_info.num_iterations; t++ {
+		for i := 0; i < len(meta.agents); i++ {
+			a_t := meta.a_linear_component - float64(t)*(meta.a_linear_component/float64(meta.metaheuristic_info.num_iterations))
+			r1 := rand.Float64()
+			r2 := rand.Float64()
+			A := 2*a_t*r1 - a_t
+			C := 2 * r2
+			random_agent_index := rand.Intn(len(meta.agents))
+			for random_agent_index == i {
+				random_agent_index = rand.Intn(len(meta.agents))
+			}
+			random_agent := meta.agents[random_agent_index]
+			D := make([]float64, meta.metaheuristic_info.num_features)
+			for ind := 0; ind < meta.metaheuristic_info.num_features; ind++ {
+				D[ind] = math.Abs(C*random_agent[ind] - meta.agents[i][ind])
+			}
+			new_position := make([]float64, meta.metaheuristic_info.num_features)
+			for ind := 0; ind < meta.metaheuristic_info.num_features; ind++ {
+				new_position[ind] = random_agent[ind] - D[ind]*A
+			}
+
+			metric_value := meta.metaheuristic_info.metric.Compute_metric(&new_position)
+			if metric_value.computed_metric > fitness[i] {
+				fitness[i] = metric_value.computed_metric
+				meta.agents[i] = metric_value.result_array
+				if fitness[i] > best_agent_fitness {
+					best_agent_fitness = fitness[i]
+					best_agent = meta.agents[i]
+				}
+			}
+		}
+	}
+	return Return_metric{best_agent_fitness, best_agent}
+}
+
+type WOA struct {
+	agents             [][]float64
+	metaheuristic_info Metaheuristic
+	searching          float64
+}
+
+func (meta *WOA) optimize() Return_metric {
+	fitness := make([]float64, meta.metaheuristic_info.population_size)
+	for i := 0; i < meta.metaheuristic_info.population_size; i++ {
+		metric_value := meta.metaheuristic_info.metric.Compute_metric(&meta.agents[i])
+		meta.agents[i] = metric_value.result_array
+		fitness[i] = metric_value.computed_metric
+	}
+	best_agent_fitness := 0.0
+	best_agent := make([]float64, len(meta.agents[0]))
+
+	for t := 0; t < meta.metaheuristic_info.num_iterations; t++ {
+		a := 2.0 - float64(t)*(2.0/float64(meta.metaheuristic_info.num_iterations))
+		for i := 0; i < len(meta.agents); i++ {
+			r1 := rand.Float64()
+			r2 := rand.Float64()
+			A := 2*a*r1 - a
+			C := 2 * r2
+			b := 1.0
+			l := rand.Float64()*2 - 1
+			p := rand.Float64()
+			X_rand := meta.agents[rand.Intn(len(meta.agents))]
+			D_X_rand := make([]float64, meta.metaheuristic_info.num_features)
+			X_new := make([]float64, meta.metaheuristic_info.num_features)
+
+			if p < 0.5 {
+				if math.Abs(A) < 1 {
+					for j := 0; j < meta.metaheuristic_info.num_features; j++ {
+						D_X_rand[j] = math.Abs(C*X_rand[j] - meta.agents[i][j])
+						X_new[j] = X_rand[j] - A*D_X_rand[j]
+					}
+				} else {
+					for j := 0; j < meta.metaheuristic_info.num_features; j++ {
+						X_new[j] = X_rand[j] - A*math.Abs(C*X_rand[j]-meta.agents[i][j])
+					}
+				}
+			} else {
+				for j := 0; j < meta.metaheuristic_info.num_features; j++ {
+					D_X_rand[j] = math.Abs(X_rand[j] - meta.agents[i][j])
+					X_new[j] = D_X_rand[j]*math.Exp(b*l)*math.Cos(2*math.Pi*l) + X_rand[j]
+				}
+			}
+
+			for j := 0; j < meta.metaheuristic_info.num_features; j++ {
+				X_new[j] = clamp(X_new[j], -meta.searching, meta.searching)
+			}
+
+			metric_value := meta.metaheuristic_info.metric.Compute_metric(&X_new)
+
+			if metric_value.computed_metric > fitness[i] {
+				fitness[i] = metric_value.computed_metric
+				meta.agents[i] = metric_value.result_array
+				if fitness[i] > best_agent_fitness {
+					best_agent_fitness = fitness[i]
+					best_agent = meta.agents[i]
+				}
+			}
+		}
+	}
+	return Return_metric{best_agent_fitness, best_agent}
+}
+
+func psnr(original_img *[][]int, saved_img *[][]int) float64 {
+	sum_elements := 0.0
+	for i := 0; i < len(*original_img); i++ {
+		for j := 0; j < len((*original_img)[i]); j++ {
+			sum_elements += math.Pow(float64((*original_img)[i][j]-(*saved_img)[i][j]), 2)
+		}
+	}
+	return 10 * math.Log10(math.Pow(255.0, 4)/sum_elements)
+}
+
+func ssim(original_img *[][]int, saved_img *[][]int) float64 {
+	var mean1, mean2 float64 = 0.0, 0.0
+	for i := 0; i < len(*original_img); i++ {
+		for j := 0; j < len((*original_img)[i]); j++ {
+			mean1 += float64((*original_img)[i][j])
+			mean2 += float64((*saved_img)[i][j])
+		}
+	}
+	mean1 /= float64(len(*original_img) * len(*original_img) * 3)
+	mean2 /= float64(len(*original_img) * len(*original_img) * 3)
+	var sd1, sd2, cov float64 = 0.0, 0.0, 0.0
+	for i := 0; i < len(*saved_img); i++ {
+		for j := 0; j < len((*saved_img)[i]); j++ {
+			sd1 += math.Pow(float64((*original_img)[i][j])/3-mean1, 2)
+			sd2 += math.Pow(float64((*saved_img)[i][j])/3-mean2, 2)
+			cov += (float64((*original_img)[i][j])/3 - mean1) * (float64((*saved_img)[i][j])/3 - mean2)
+		}
+	}
+	cov /= float64(len(*saved_img) * len(*saved_img))
+	sd1 = math.Pow(sd1/(float64(len(*saved_img)*len(*saved_img))), 0.5)
+	sd2 = math.Pow(sd2/(float64(len(*saved_img)*len(*saved_img))), 0.5)
+	c1 := math.Pow(0.01*255, 2)
+	c2 := math.Pow(0.03*255, 2)
+	return ((2*mean1*mean2 + c1) * (2*cov + c2)) / ((math.Pow(mean1, 2) + math.Pow(mean2, 2) + c1) * (math.Pow(sd1, 2) + math.Pow(sd2, 2) + c2))
+}
+
 var SEARCH_SPACE int = 10
 var q float64 = 8.0
 var POPULATION_SIZE int = 128
@@ -290,14 +461,20 @@ func main() {
 
 	scanner := bufio.NewScanner(os.Stdin)
 
-	pictures := [...]string{"peppers512.png", "lena512.png", "airplane512.png", "baboon512.png", "barbara512.png", "boat512.png", "goldhill512.png", "stream_and_bridge512.png"}
-	metaheuristics := [...]string{"de", "sca", "tlbo", "ica", "aoa", "ssa", "woa", "de"}
-	for _, metaheuristic := range metaheuristics {
-		for _, picture := range pictures {
+	//pictures := [...]string{"peppers512.png", "lena512.png", "airplane512.png", "baboon512.png", "barbara512.png", "boat512.png", "goldhill512.png", "stream_and_bridge512.png"}
+	pictures := [...]string{"peppers512.png"}
+
+	metaheuristics := [...]string{"de", "sca", "woa"}
+	scanner.Scan()
+	mode := scanner.Text()
+
+	for _, picture := range pictures {
+		if mode == "metrics" {
+			fmt.Println(picture)
+		}
+		for _, metaheuristic := range metaheuristics {
 			dir_path := metaheuristic + "_" + picture
 			os.Mkdir(dir_path, 0777)
-			scanner.Scan()
-			mode := scanner.Text()
 
 			if mode == "embedding" {
 				file_content, _ := os.ReadFile("to_embed.txt")
@@ -347,6 +524,14 @@ func main() {
 						population := generate_population(&pixel_matrix, &new_pixel_matrix, 128, 0.9, SEARCH_SPACE)
 						de := DE{population, metaheuristic_info, 0.3, 0.1}
 						solution = de.optimize()
+					} else if metaheuristic == "sca" {
+						population := generate_population(&pixel_matrix, &new_pixel_matrix, 128, 0.9, SEARCH_SPACE)
+						de := SCA{population, metaheuristic_info, 2.0}
+						solution = de.optimize()
+					} else if metaheuristic == "woa" {
+						population := generate_population(&pixel_matrix, &new_pixel_matrix, 128, 0.9, SEARCH_SPACE)
+						de := WOA{population, metaheuristic_info, float64(SEARCH_SPACE)}
+						solution = de.optimize()
 					}
 					if solution.computed_metric > 1 {
 						cnt1++
@@ -370,6 +555,9 @@ func main() {
 						metric = Metric{&pixel_matrix, "0", searching, "Z", q}
 						metaheuristic_info = Metaheuristic{POPULATION_SIZE, NUM_ITERATIONS, NUM_FEATURES, &metric}
 						de := DE{population, metaheuristic_info, 0.3, 0.1}
+						//de := SCA{population, metaheuristic_info, 2.0}
+						//de := WOA{population, metaheuristic_info, float64(SEARCH_SPACE)}
+
 						solution = de.optimize()
 						for i1 := 0; i1 < 64; i1++ {
 							fmt.Println(solution.result_array[i1])
@@ -437,6 +625,30 @@ func main() {
 				f, _ := os.Create(dir_path + "/saved.txt")
 				f.WriteString(bit_string)
 				defer f.Close()
+			} else if mode == "metrics" {
+				var image gocv.Mat = gocv.IMRead(dir_path+"/saved.png", gocv.IMReadGrayScale)
+				var rows, cols int = image.Rows(), image.Cols()
+				mat_data, _ := image.DataPtrUint8()
+				img := make([][]int, rows)
+				for row := range img {
+					img[row] = make([]int, cols)
+					for col := range img[row] {
+						img[row][col] = int(mat_data[row*cols+col])
+					}
+				}
+				image = gocv.IMRead(picture, gocv.IMReadGrayScale)
+				rows, cols = image.Rows(), image.Cols()
+				mat_data, _ = image.DataPtrUint8()
+				img_base := make([][]int, rows)
+				for row := range img_base {
+					img_base[row] = make([]int, cols)
+					for col := range img_base[row] {
+						img_base[row][col] = int(mat_data[row*cols+col])
+					}
+				}
+				file_content, _ := os.ReadFile(dir_path + "/saved.txt")
+				information := string(file_content)
+				fmt.Println(metaheuristic, len(information), ssim(&img_base, &img), psnr(&img_base, &img))
 			}
 		}
 	}
