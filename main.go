@@ -44,6 +44,18 @@ func save_info(arr *[]int, path string) {
 	f.Close()
 }
 
+func save_q(q float64, path string) {
+	f, _ := os.Create(path)
+	f.WriteString(strconv.FormatFloat(q, 'f', -1, 64))
+	f.Close()
+}
+
+func load_q(path string) float64 {
+	data, _ := os.ReadFile(path)
+	q_ret, _ := strconv.ParseFloat(string(data), 64)
+	return q_ret
+}
+
 func do_dct(input_arr *[][]int) [][]float64 {
 	slice := *input_arr
 
@@ -98,6 +110,29 @@ func undo_dct(dct_2din *[][]float64) [][]int {
 		}
 	}
 	return output_result
+}
+
+func generate_q(input_arr *[][]int) float64 {
+	dct_arr := do_dct(input_arr)
+	val_map := make(map[int]int)
+	for i := 0; i < len(dct_arr); i++ {
+		for j := 0; j < len(dct_arr[0]); j++ {
+			rounded := int(math.Round(dct_arr[i][j]))
+			if rounded <= 20 && rounded >= 3 {
+				val_map[rounded]++
+			}
+		}
+	}
+	ret_q, cnt := 0, 65 // 8 * 8 block = 64
+	for key, value := range val_map {
+		if value <= cnt {
+			cnt = value
+			if key < ret_q {
+				ret_q = key
+			}
+		}
+	}
+	return float64(ret_q)
 }
 
 func generate_population(orig_matrix *[][]int, embedded_matrix *[][]int, population_size int, beta float64, search_space int) [][]float64 {
@@ -452,7 +487,8 @@ func ssim(original_img *[][]int, saved_img *[][]int) float64 {
 }
 
 var SEARCH_SPACE int = 10
-var q float64 = 8.0
+
+// var q float64 = 3 + rand.Float64()*(20-3)
 var POPULATION_SIZE int = 128
 var NUM_ITERATIONS int = 128
 var NUM_FEATURES int = 64
@@ -477,6 +513,7 @@ func main() {
 			os.Mkdir(dir_path, 0777)
 
 			if mode == "embedding" {
+				q := 3 + rand.Float64()*(20-3)
 				file_content, _ := os.ReadFile("to_embed.txt")
 				information := string(file_content)
 				ind_information := 0
@@ -500,7 +537,7 @@ func main() {
 					copy_img[i] = make([]int, len(img[i]))
 					copy(copy_img[i], img[i])
 				}
-
+				save_q(q, dir_path+"/q.txt")
 				var cnt1, cnt_blocks int
 				for _, block := range blocks {
 					fmt.Print("\n", cnt_blocks, "\n")
@@ -542,9 +579,7 @@ func main() {
 								ind++
 							}
 						}
-
 						ind_information += 31
-
 					} else {
 						fmt.Print(solution.computed_metric)
 						searching := 5
@@ -570,6 +605,7 @@ func main() {
 							}
 						}
 					}
+					q = generate_q(&copy_img)
 				}
 				imageMat := gocv.NewMatWithSize(rows, cols, gocv.MatTypeCV8UC1)
 				defer imageMat.Close()
@@ -585,6 +621,7 @@ func main() {
 				}
 				fmt.Print(cnt1)
 			} else if mode == "extraction" {
+				q := load_q(dir_path + "/q.txt")
 				var bit_string string
 				var image gocv.Mat = gocv.IMRead(dir_path+"/saved.png", gocv.IMReadGrayScale)
 				var rows, cols int = image.Rows(), image.Cols()
@@ -621,6 +658,7 @@ func main() {
 					if s != "0" {
 						bit_string += s[1:]
 					}
+					q = generate_q(&pixel_matrix)
 				}
 				f, _ := os.Create(dir_path + "/saved.txt")
 				f.WriteString(bit_string)
