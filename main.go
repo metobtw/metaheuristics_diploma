@@ -6,8 +6,10 @@ import (
 	"math"
 	"math/rand"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
 
 	gofourier "github.com/ardabasaran/go-fourier"
 	"gocv.io/x/gocv"
@@ -507,7 +509,7 @@ type MetaheuristicB struct {
 	metric         *Metric
 	agents         [][]float64
 	optimizeFunc   func(*MetaheuristicB, ...interface{}) ReturnMetric
-	params         interface{}
+	params         []interface{}
 }
 
 func optimizeWoa(meta *MetaheuristicB, args ...interface{}) ReturnMetric {
@@ -674,228 +676,447 @@ func optimizeSca(meta *MetaheuristicB, args ...interface{}) ReturnMetric {
 	return ReturnMetric{bestAgentFitness, bestAgent}
 }
 
+func updateParams(meta1, meta2, meta3 *MetaheuristicB) { // *Metaheuristic?
+	var wg sync.WaitGroup
+	wg.Add(3)
+	//fmt.Print((*meta1).params, (*meta2).numFeatures)
+	go func() {
+		defer wg.Done()
+		meta1.optimizeFunc(meta1, (*meta1).params...)
+	}()
+
+	go func() {
+		defer wg.Done()
+		meta2.optimizeFunc(meta2, (*meta2).params...)
+	}()
+
+	go func() {
+		defer wg.Done()
+		meta3.optimizeFunc(meta3, (*meta3).params...)
+	}()
+
+	wg.Wait()
+}
+
+func FindBestWorstMigrants(meta *MetaheuristicB, numBest, numWorst int) (bestAgents []*[]float64, worstAgents []*[]float64) {
+	fitness := make([]struct {
+		metric float64
+		agent  *[]float64
+	}, meta.populationSize)
+
+	for i := 0; i < meta.populationSize; i++ {
+		metricValue := meta.metric.ComputeMetric(&meta.agents[i])
+		meta.agents[i] = metricValue.resultArray
+		fitness[i] = struct {
+			metric float64
+			agent  *[]float64
+		}{metric: metricValue.computedMetric, agent: &meta.agents[i]}
+	}
+
+	sort.Slice(fitness, func(i, j int) bool {
+		return fitness[i].metric > fitness[j].metric // Максимизация
+	})
+
+	bestAgents = make([]*[]float64, numBest)
+	for i := 0; i < numBest; i++ {
+		bestAgents[i] = fitness[i].agent
+	}
+
+	worstAgents = make([]*[]float64, numWorst)
+	for i := 0; i < numWorst; i++ {
+		worstAgents[i] = fitness[len(fitness)-1-i].agent
+	}
+
+	return
+}
+func helpMigrantsV1(worstMigrants, bestMigrants1, bestMigrants2 []*[]float64) {
+	for ind1 := 0; ind1 < len(bestMigrants1); ind1++ {
+		*worstMigrants[ind1] = make([]float64, len(*bestMigrants1[ind1]))
+		copy(*worstMigrants[ind1], *bestMigrants1[ind1])
+
+		ind2 := ind1 + len(bestMigrants1)
+
+		*worstMigrants[ind2] = make([]float64, len(*bestMigrants2[ind1]))
+		copy(*worstMigrants[ind2], *bestMigrants2[ind1])
+	}
+}
+func updateMigrantsV1(meta1, meta2, meta3 *MetaheuristicB, numBest, numWorst int) {
+	var wg sync.WaitGroup
+	wg.Add(3)
+	var bestMigrants1, bestMigrants2, bestMigrants3 []*[]float64
+	var worstMigrants1, worstMigrants2, worstMigrants3 []*[]float64
+
+	go func() {
+		defer wg.Done()
+		bestMigrants1, worstMigrants1 = FindBestWorstMigrants(meta1, numBest, numWorst)
+	}()
+
+	go func() {
+		defer wg.Done()
+		bestMigrants2, worstMigrants2 = FindBestWorstMigrants(meta2, numBest, numWorst)
+	}()
+
+	go func() {
+		defer wg.Done()
+		bestMigrants3, worstMigrants3 = FindBestWorstMigrants(meta3, numBest, numWorst)
+	}()
+	wg.Wait()
+	helpMigrantsV1(worstMigrants1, bestMigrants2, bestMigrants3)
+	helpMigrantsV1(worstMigrants2, bestMigrants1, bestMigrants3)
+	helpMigrantsV1(worstMigrants3, bestMigrants1, bestMigrants2)
+}
+
+type bestMetric struct {
+	computedMetric float64
+	resultArray    *[]float64
+}
+
+func ParallelOptimizeV1(meta1, meta2, meta3 *MetaheuristicB, populationPercent, migrationStep int) ReturnMetric {
+	numBest := (len(meta1.agents) * populationPercent) / 100
+	numWorst := numBest * 3
+	iterNum := meta1.numIterations
+	(*meta1).numIterations = migrationStep
+	(*meta2).numIterations = migrationStep
+	(*meta3).numIterations = migrationStep
+	for i := 0; i < iterNum/migrationStep; i++ {
+		//fmt.Printf("Iteration %d: %d\n", iterNum/migrationStep, i)
+		updateParams(meta1, meta2, meta3)
+		updateMigrantsV1(meta1, meta2, meta3, numBest, numWorst)
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(3)
+	//var bestMetric1, bestMetric2, bestMetric3 bestMetric
+	//go func() {
+	//	defer wg.Done()
+	//	for i := 0; i < meta1.populationSize; i++ {
+	//		metricValue := meta1.metric.ComputeMetric(&meta1.agents[i])
+	//		meta1.agents[i] = metricValue.resultArray
+	//		if metricValue.computedMetric > bestMetric1.computedMetric {
+	//			bestMetric1.computedMetric = metricValue.computedMetric
+	//			bestMetric1.resultArray = &metricValue.resultArray
+	//		}
+	//	}
+	//}()
+	//
+	//go func() {
+	//	defer wg.Done()
+	//	for i := 0; i < meta2.populationSize; i++ {
+	//		metricValue := meta2.metric.ComputeMetric(&meta2.agents[i])
+	//		meta2.agents[i] = metricValue.resultArray
+	//		if metricValue.computedMetric > bestMetric2.computedMetric {
+	//			bestMetric2.computedMetric = metricValue.computedMetric
+	//			bestMetric2.resultArray = &metricValue.resultArray
+	//		}
+	//	}
+	//}()
+	//
+	//go func() {
+	//	defer wg.Done()
+	//	for i := 0; i < meta3.populationSize; i++ {
+	//		metricValue := meta3.metric.ComputeMetric(&meta3.agents[i])
+	//		meta3.agents[i] = metricValue.resultArray
+	//		if metricValue.computedMetric > bestMetric3.computedMetric {
+	//			bestMetric3.computedMetric = metricValue.computedMetric
+	//			bestMetric3.resultArray = &metricValue.resultArray
+	//		}
+	//	}
+	//}()
+	var bestMetric1, bestMetric2, bestMetric3 ReturnMetric
+	go func() {
+		defer wg.Done()
+		for i := 0; i < meta1.populationSize; i++ {
+			metricValue := meta1.metric.ComputeMetric(&meta1.agents[i])
+			meta1.agents[i] = metricValue.resultArray
+			if metricValue.computedMetric > bestMetric1.computedMetric {
+				bestMetric1.computedMetric = metricValue.computedMetric
+				bestMetric1.resultArray = metricValue.resultArray
+			}
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		for i := 0; i < meta2.populationSize; i++ {
+			metricValue := meta2.metric.ComputeMetric(&meta2.agents[i])
+			meta2.agents[i] = metricValue.resultArray
+			if metricValue.computedMetric > bestMetric2.computedMetric {
+				bestMetric2.computedMetric = metricValue.computedMetric
+				bestMetric2.resultArray = metricValue.resultArray
+			}
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		for i := 0; i < meta3.populationSize; i++ {
+			metricValue := meta3.metric.ComputeMetric(&meta3.agents[i])
+			meta3.agents[i] = metricValue.resultArray
+			if metricValue.computedMetric > bestMetric3.computedMetric {
+				bestMetric3.computedMetric = metricValue.computedMetric
+				bestMetric3.resultArray = metricValue.resultArray
+			}
+		}
+	}()
+	wg.Wait()
+	if bestMetric1.computedMetric > bestMetric2.computedMetric && bestMetric1.computedMetric > bestMetric3.computedMetric {
+		return bestMetric1
+	}
+	if bestMetric2.computedMetric > bestMetric3.computedMetric {
+		return bestMetric2
+	}
+	return bestMetric3
+}
+
 // var q float64 = 3 + rand.Float64()*(20-3)
 
 var PopulationSize = 128
 var NumIterations = 128
 var NumFeatures = 64
 
-func main() {
+func processPicture(picture string, mode string, metaheuristics []string) {
+	if mode == "metrics" {
+		fmt.Println(picture)
+	}
+	for _, metaheuristic := range metaheuristics {
+		dirPath := metaheuristic + "_" + picture
+		err := os.Mkdir(dirPath, 0777)
+		if err != nil {
+			return
+		}
 
+		if mode == "embedding" {
+			q := 3 + rand.Float64()*(20-3)
+			fileContent, _ := os.ReadFile("to_embed.txt")
+			information := string(fileContent)
+			indInformation := 0
+			var image = gocv.IMRead(picture, gocv.IMReadGrayScale)
+			var rows, cols = image.Rows(), image.Cols()
+			matData, _ := image.DataPtrUint8()
+			fmt.Print(rows, cols)
+			img := make([][]int, rows)
+			for row := range img {
+				img[row] = make([]int, cols)
+				for col := range img[row] {
+					img[row][col] = int(matData[row*cols+col])
+				}
+			}
+			// нужны ли вообще блоки?
+			blocks := rand.Perm(rows * cols / 64)
+			saveInfo(&blocks, dirPath+"/blocks.txt")
+
+			copyImg := make([][]int, len(img))
+			for i := range img {
+				copyImg[i] = make([]int, len(img[i]))
+				copy(copyImg[i], img[i])
+			}
+			saveQ(q, dirPath+"/q.txt")
+			var cnt1, cntBlocks int
+			for _, block := range blocks {
+				fmt.Print("\n", cntBlocks, "\n")
+				cntBlocks++
+				pixelMatrix := make([][]int, 8)
+				blockW := block % (rows / 8)
+				blockH := (block - blockW) / (rows / 8)
+				for i1 := blockH * 8; i1 < blockH*8+8; i1++ {
+					pixelMatrix[i1%8] = make([]int, 8)
+					for i2 := blockW * 8; i2 < blockW*8+8; i2++ {
+						pixelMatrix[i1%8][i2%8] = img[i1][i2]
+					}
+				}
+				dctMatrix := doDct(&pixelMatrix)
+				dctMatrixNew := embedToDct(dctMatrix, "1"+information[indInformation:indInformation+31], "A", q)
+				newPixelMatrix := undoDct(&dctMatrixNew)
+				metric := Metric{&pixelMatrix, "1" + information[indInformation:indInformation+31], SearchSpace, "A", q}
+				metaheuristicInfo := Metaheuristic{PopulationSize, NumIterations, NumFeatures, &metric}
+				var solution ReturnMetric
+				//var solution1 bestMetric
+				if metaheuristic == "de" {
+					population := generatePopulation(&pixelMatrix, &newPixelMatrix, 128, 0.9, SearchSpace)
+					de := MetaheuristicB{PopulationSize, NumIterations, NumFeatures, &metric, population, optimizeDe, []interface{}{0.3, 0.1}}
+					solution = de.optimizeFunc(&de, de.params...)
+				} else if metaheuristic == "sca" {
+					population := generatePopulation(&pixelMatrix, &newPixelMatrix, 128, 0.9, SearchSpace)
+					de := MetaheuristicB{PopulationSize, NumIterations, NumFeatures, &metric, population, optimizeSca, []interface{}{2.0}}
+					solution = de.optimizeFunc(&de, de.params...)
+				} else if metaheuristic == "woa" {
+					population := generatePopulation(&pixelMatrix, &newPixelMatrix, 128, 0.9, SearchSpace)
+					de := MetaheuristicB{PopulationSize, NumIterations, NumFeatures, &metric, population, optimizeWoa, []interface{}{SearchSpace}}
+					solution = de.optimizeFunc(&de, de.params...)
+				} else if metaheuristic == "de_sca_woa" {
+					population1 := generatePopulation(&pixelMatrix, &newPixelMatrix, 128, 0.9, SearchSpace)
+					de := MetaheuristicB{PopulationSize, NumIterations, NumFeatures, &metric, population1, optimizeDe, []interface{}{0.3, 0.1}}
+					population2 := generatePopulation(&pixelMatrix, &newPixelMatrix, 128, 0.9, SearchSpace)
+					sca := MetaheuristicB{PopulationSize, NumIterations, NumFeatures, &metric, population2, optimizeSca, []interface{}{2.0}}
+					population3 := generatePopulation(&pixelMatrix, &newPixelMatrix, 128, 0.9, SearchSpace)
+					woa := MetaheuristicB{PopulationSize, NumIterations, NumFeatures, &metric, population3, optimizeWoa, []interface{}{SearchSpace}}
+					solution = ParallelOptimizeV1(&de, &sca, &woa, 2, 5)
+				}
+				if solution.computedMetric > 1 {
+					cnt1++
+					ind := 0
+					for i1 := blockH * 8; i1 < blockH*8+8; i1++ {
+						for i2 := blockW * 8; i2 < blockW*8+8; i2++ {
+							copyImg[i1][i2] -= int(solution.resultArray[ind])
+							ind++
+						}
+					}
+					indInformation += 31
+				} else {
+					fmt.Print(solution.computedMetric)
+					searching := 5
+					dctMatrix = doDct(&pixelMatrix)
+					dctMatrixNew = embedToDct(dctMatrix, "0", "Z", q)
+					newPixelMatrix = undoDct(&dctMatrixNew)
+					population := generatePopulation(&pixelMatrix, &newPixelMatrix, 128, 0.9, searching)
+					metric = Metric{&pixelMatrix, "0", searching, "Z", q}
+					metaheuristicInfo = Metaheuristic{PopulationSize, NumIterations, NumFeatures, &metric}
+					de := DE{population, metaheuristicInfo, 0.3, 0.1}
+					//de := SCA{population, metaheuristic_info, 2.0}
+					//de := WOA{population, metaheuristic_info, float64(SEARCH_SPACE)}
+
+					solution = de.optimize()
+					for i1 := 0; i1 < 64; i1++ {
+						fmt.Println(solution.resultArray[i1])
+					}
+					ind := 0
+					for i1 := blockH * 8; i1 < blockH*8+8; i1++ {
+						for i2 := blockW * 8; i2 < blockW*8+8; i2++ {
+							copyImg[i1][i2] -= int(solution.resultArray[ind])
+							ind++
+						}
+					}
+				}
+				q = generateQ(&copyImg)
+			}
+			imageMat := gocv.NewMatWithSize(rows, cols, gocv.MatTypeCV8UC1)
+			for row := 0; row < rows; row++ {
+				for col := 0; col < cols; col++ {
+					imageMat.SetUCharAt(row, col, uint8(copyImg[row][col]))
+				}
+			}
+			outputFilePath := dirPath + "/saved.png"
+			if ok := gocv.IMWrite(outputFilePath, imageMat); !ok {
+				fmt.Println("Ошибка: не удалось сохранить изображение.")
+				os.Exit(1)
+			}
+			err = imageMat.Close()
+			if err != nil {
+				return
+			}
+			fmt.Print(cnt1)
+		} else if mode == "extraction" {
+			q := loadQ(dirPath + "/q.txt")
+			var bitString string
+			var image = gocv.IMRead(dirPath+"/saved.png", gocv.IMReadGrayScale)
+			var rows, cols = image.Rows(), image.Cols()
+			matData, _ := image.DataPtrUint8()
+			img := make([][]int, rows)
+			for row := range img {
+				img[row] = make([]int, cols)
+				for col := range img[row] {
+					img[row][col] = int(matData[row*cols+col])
+				}
+			}
+			file, _ := os.Open(dirPath + "/blocks.txt")
+			var blocks []int
+			fileScanner := bufio.NewScanner(file)
+			for fileScanner.Scan() {
+				line := fileScanner.Text()
+				for _, numStr := range strings.Split(line, " ") {
+					num, _ := strconv.Atoi(numStr)
+					blocks = append(blocks, num)
+				}
+			}
+			for _, block := range blocks {
+				pixelMatrix := make([][]int, 8)
+				blockW := block % (rows / 8)
+				blockH := (block - blockW) / (rows / 8)
+				for i1 := blockH * 8; i1 < blockH*8+8; i1++ {
+					pixelMatrix[i1%8] = make([]int, 8)
+					for i2 := blockW * 8; i2 < blockW*8+8; i2++ {
+						pixelMatrix[i1%8][i2%8] = img[i1][i2]
+					}
+				}
+				s := extractingDct(&pixelMatrix, q)
+				if s != "0" {
+					bitString += s[1:]
+				}
+				q = generateQ(&pixelMatrix)
+			}
+			f, _ := os.Create(dirPath + "/saved.txt")
+			_, err := f.WriteString(bitString)
+			if err != nil {
+				return
+			}
+			err = f.Close()
+			if err != nil {
+				return
+			}
+			err = file.Close()
+			if err != nil {
+				return
+			}
+		} else if mode == "metrics" {
+			var image = gocv.IMRead(dirPath+"/saved.png", gocv.IMReadGrayScale)
+			var rows, cols = image.Rows(), image.Cols()
+			matData, _ := image.DataPtrUint8()
+			img := make([][]int, rows)
+			for row := range img {
+				img[row] = make([]int, cols)
+				for col := range img[row] {
+					img[row][col] = int(matData[row*cols+col])
+				}
+			}
+			image = gocv.IMRead(picture, gocv.IMReadGrayScale)
+			rows, cols = image.Rows(), image.Cols()
+			matData, _ = image.DataPtrUint8()
+			imgBase := make([][]int, rows)
+			for row := range imgBase {
+				imgBase[row] = make([]int, cols)
+				for col := range imgBase[row] {
+					imgBase[row][col] = int(matData[row*cols+col])
+				}
+			}
+			fileContent, _ := os.ReadFile(dirPath + "/saved.txt")
+			information := string(fileContent)
+			fmt.Println(metaheuristic, len(information), ssim(&imgBase, &img), psnr(&imgBase, &img))
+		}
+	}
+}
+
+func main() {
 	scanner := bufio.NewScanner(os.Stdin)
 
-	//pictures := [...]string{"peppers512.png", "lena512.png", "airplane512.png", "baboon512.png", "barbara512.png", "boat512.png", "goldhill512.png", "stream_and_bridge512.png"}
-	pictures := [...]string{"peppers512.png"}
-
-	//metaheuristics := [...]string{"de", "sca", "woa"}
-	metaheuristics := [...]string{"woa"}
+	pictures := []string{"peppers512.png", "lena512.png", "airplane512.png", "baboon512.png", "barbara512.png", "boat512.png", "goldhill512.png", "stream_and_bridge512.png"}
+	metaheuristics := []string{"de", "sca", "woa", "de_sca_woa"}
 
 	scanner.Scan()
 	mode := scanner.Text()
 
+	var wg sync.WaitGroup
+
 	for _, picture := range pictures {
-		if mode == "metrics" {
-			fmt.Println(picture)
-		}
-		for _, metaheuristic := range metaheuristics {
-			dirPath := metaheuristic + "_" + picture
-			err := os.Mkdir(dirPath, 0777)
-			if err != nil {
-				return
-			}
-
-			if mode == "embedding" {
-				q := 3 + rand.Float64()*(20-3)
-				fileContent, _ := os.ReadFile("to_embed.txt")
-				information := string(fileContent)
-				indInformation := 0
-				var image = gocv.IMRead(picture, gocv.IMReadGrayScale)
-				var rows, cols = image.Rows(), image.Cols()
-				matData, _ := image.DataPtrUint8()
-				fmt.Print(rows, cols)
-				img := make([][]int, rows)
-				for row := range img {
-					img[row] = make([]int, cols)
-					for col := range img[row] {
-						img[row][col] = int(matData[row*cols+col])
-					}
-				}
-				// нужны ли вообще блоки?
-				blocks := rand.Perm(rows * cols / 64)
-				saveInfo(&blocks, dirPath+"/blocks.txt")
-
-				copyImg := make([][]int, len(img))
-				for i := range img {
-					copyImg[i] = make([]int, len(img[i]))
-					copy(copyImg[i], img[i])
-				}
-				saveQ(q, dirPath+"/q.txt")
-				var cnt1, cntBlocks int
-				for _, block := range blocks {
-					fmt.Print("\n", cntBlocks, "\n")
-					cntBlocks++
-					pixelMatrix := make([][]int, 8)
-					blockW := block % (rows / 8)
-					blockH := (block - blockW) / (rows / 8)
-					for i1 := blockH * 8; i1 < blockH*8+8; i1++ {
-						pixelMatrix[i1%8] = make([]int, 8)
-						for i2 := blockW * 8; i2 < blockW*8+8; i2++ {
-							pixelMatrix[i1%8][i2%8] = img[i1][i2]
-						}
-					}
-					dctMatrix := doDct(&pixelMatrix)
-					dctMatrixNew := embedToDct(dctMatrix, "1"+information[indInformation:indInformation+31], "A", q)
-					newPixelMatrix := undoDct(&dctMatrixNew)
-					metric := Metric{&pixelMatrix, "1" + information[indInformation:indInformation+31], SearchSpace, "A", q}
-					metaheuristicInfo := Metaheuristic{PopulationSize, NumIterations, NumFeatures, &metric}
-					var solution ReturnMetric
-					if metaheuristic == "de" {
-						population := generatePopulation(&pixelMatrix, &newPixelMatrix, 128, 0.9, SearchSpace)
-						//de := DE{population, metaheuristic_info, 0.3, 0.1}
-						de := MetaheuristicB{PopulationSize, NumIterations, NumFeatures, &metric, population, optimizeDe, []interface{}{0.3, 0.1}}
-						solution = de.optimizeFunc(&de, de.params)
-					} else if metaheuristic == "sca" {
-						population := generatePopulation(&pixelMatrix, &newPixelMatrix, 128, 0.9, SearchSpace)
-						//de := SCA{population, metaheuristic_info, 2.0}
-						de := MetaheuristicB{PopulationSize, NumIterations, NumFeatures, &metric, population, optimizeSca, []interface{}{2.0}}
-						solution = de.optimizeFunc(&de, de.params)
-						//solution = de.optimize()
-					} else if metaheuristic == "woa" {
-						population := generatePopulation(&pixelMatrix, &newPixelMatrix, 128, 0.9, SearchSpace)
-						//de := WOA{population, metaheuristic_info, float64(SEARCH_SPACE)}
-						de := MetaheuristicB{PopulationSize, NumIterations, NumFeatures, &metric, population, optimizeWoa, []interface{}{SearchSpace}}
-						solution = de.optimizeFunc(&de, de.params)
-					}
-					if solution.computedMetric > 1 {
-						cnt1++
-						ind := 0
-						for i1 := blockH * 8; i1 < blockH*8+8; i1++ {
-							for i2 := blockW * 8; i2 < blockW*8+8; i2++ {
-								copyImg[i1][i2] -= int(solution.resultArray[ind])
-								ind++
-							}
-						}
-						indInformation += 31
-					} else {
-						fmt.Print(solution.computedMetric)
-						searching := 5
-						dctMatrix = doDct(&pixelMatrix)
-						dctMatrixNew = embedToDct(dctMatrix, "0", "Z", q)
-						newPixelMatrix = undoDct(&dctMatrixNew)
-						population := generatePopulation(&pixelMatrix, &newPixelMatrix, 128, 0.9, searching)
-						metric = Metric{&pixelMatrix, "0", searching, "Z", q}
-						metaheuristicInfo = Metaheuristic{PopulationSize, NumIterations, NumFeatures, &metric}
-						de := DE{population, metaheuristicInfo, 0.3, 0.1}
-						//de := SCA{population, metaheuristic_info, 2.0}
-						//de := WOA{population, metaheuristic_info, float64(SEARCH_SPACE)}
-
-						solution = de.optimize()
-						for i1 := 0; i1 < 64; i1++ {
-							fmt.Println(solution.resultArray[i1])
-						}
-						ind := 0
-						for i1 := blockH * 8; i1 < blockH*8+8; i1++ {
-							for i2 := blockW * 8; i2 < blockW*8+8; i2++ {
-								copyImg[i1][i2] -= int(solution.resultArray[ind])
-								ind++
-							}
-						}
-					}
-					q = generateQ(&copyImg)
-				}
-				imageMat := gocv.NewMatWithSize(rows, cols, gocv.MatTypeCV8UC1)
-				for row := 0; row < rows; row++ {
-					for col := 0; col < cols; col++ {
-						imageMat.SetUCharAt(row, col, uint8(copyImg[row][col]))
-					}
-				}
-				outputFilePath := dirPath + "/saved.png"
-				if ok := gocv.IMWrite(outputFilePath, imageMat); !ok {
-					fmt.Println("Ошибка: не удалось сохранить изображение.")
-					os.Exit(1)
-				}
-				err = imageMat.Close()
-				if err != nil {
-					return
-				}
-				fmt.Print(cnt1)
-			} else if mode == "extraction" {
-				q := loadQ(dirPath + "/q.txt")
-				var bitString string
-				var image = gocv.IMRead(dirPath+"/saved.png", gocv.IMReadGrayScale)
-				var rows, cols = image.Rows(), image.Cols()
-				matData, _ := image.DataPtrUint8()
-				img := make([][]int, rows)
-				for row := range img {
-					img[row] = make([]int, cols)
-					for col := range img[row] {
-						img[row][col] = int(matData[row*cols+col])
-					}
-				}
-				file, _ := os.Open(dirPath + "/blocks.txt")
-				var blocks []int
-				fileScanner := bufio.NewScanner(file)
-				for fileScanner.Scan() {
-					line := fileScanner.Text()
-					for _, numStr := range strings.Split(line, " ") {
-						num, _ := strconv.Atoi(numStr)
-						blocks = append(blocks, num)
-					}
-				}
-				for _, block := range blocks {
-					pixelMatrix := make([][]int, 8)
-					blockW := block % (rows / 8)
-					blockH := (block - blockW) / (rows / 8)
-					for i1 := blockH * 8; i1 < blockH*8+8; i1++ {
-						pixelMatrix[i1%8] = make([]int, 8)
-						for i2 := blockW * 8; i2 < blockW*8+8; i2++ {
-							pixelMatrix[i1%8][i2%8] = img[i1][i2]
-						}
-					}
-					s := extractingDct(&pixelMatrix, q)
-					if s != "0" {
-						bitString += s[1:]
-					}
-					q = generateQ(&pixelMatrix)
-				}
-				f, _ := os.Create(dirPath + "/saved.txt")
-				_, err := f.WriteString(bitString)
-				if err != nil {
-					return
-				}
-				err = f.Close()
-				if err != nil {
-					return
-				}
-				err = file.Close()
-				if err != nil {
-					return
-				}
-			} else if mode == "metrics" {
-				var image = gocv.IMRead(dirPath+"/saved.png", gocv.IMReadGrayScale)
-				var rows, cols = image.Rows(), image.Cols()
-				matData, _ := image.DataPtrUint8()
-				img := make([][]int, rows)
-				for row := range img {
-					img[row] = make([]int, cols)
-					for col := range img[row] {
-						img[row][col] = int(matData[row*cols+col])
-					}
-				}
-				image = gocv.IMRead(picture, gocv.IMReadGrayScale)
-				rows, cols = image.Rows(), image.Cols()
-				matData, _ = image.DataPtrUint8()
-				imgBase := make([][]int, rows)
-				for row := range imgBase {
-					imgBase[row] = make([]int, cols)
-					for col := range imgBase[row] {
-						imgBase[row][col] = int(matData[row*cols+col])
-					}
-				}
-				fileContent, _ := os.ReadFile(dirPath + "/saved.txt")
-				information := string(fileContent)
-				fmt.Println(metaheuristic, len(information), ssim(&imgBase, &img), psnr(&imgBase, &img))
-			}
-		}
+		wg.Add(1)
+		go func(pic string) {
+			defer wg.Done()
+			processPicture(pic, mode, metaheuristics)
+		}(picture)
 	}
+
+	wg.Wait() // Ждём завершения всех горутин
 }
+
+//scanner := bufio.NewScanner(os.Stdin)
+
+////pictures := [...]string{"peppers512.png", "lena512.png", "airplane512.png", "baboon512.png", "barbara512.png", "boat512.png", "goldhill512.png", "stream_and_bridge512.png"}
+//pictures := [...]string{"peppers512.png"}
+//
+////metaheuristics := [...]string{"de", "sca", "woa"}
+////metaheuristics := [...]string{"de_sca_woa", "woa"}
+//metaheuristics := [...]string{"de_sca_woa"}
+//
+//scanner.Scan()
+//mode := scanner.Text()
+
+//}
